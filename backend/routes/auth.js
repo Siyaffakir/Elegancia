@@ -8,6 +8,18 @@ const { requireAuth, JWT_SECRET } = require('../middleware/auth');
 const { loginLimiter, changePasswordLimiter } = require('../middleware/rateLimiters');
 const { logAudit } = require('../middleware/auditLog');
 
+function getValidExpiresIn(raw) {
+  if (!raw) return '24h';
+  const cleaned = String(raw).replace(/^['"\s]+|['"\s]+$/g, '').trim();
+  if (/^\d+$/.test(cleaned)) {
+    return parseInt(cleaned, 10);
+  }
+  if (/^\d+\s*(ms|s|m|h|d|w|y)$/i.test(cleaned)) {
+    return cleaned;
+  }
+  return '24h';
+}
+
 // POST /api/auth/login — Admin authentication
 router.post('/login', loginLimiter, async (req, res, next) => {
   try {
@@ -31,7 +43,7 @@ router.post('/login', loginLimiter, async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid administrator credentials.' });
     }
 
-    const expiresIn = process.env.JWT_EXPIRES_IN || '24h';
+    const expiresIn = getValidExpiresIn(process.env.JWT_EXPIRES_IN);
     const token = jwt.sign(
       {
         id: admin.id,
