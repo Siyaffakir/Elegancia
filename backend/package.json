@@ -1,0 +1,33 @@
+{
+  "name": "dz-shop-backend",
+  "version": "1.0.0",
+  "description": "Backend API for DZ Shop e-commerce site",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "db:export-mysql": "node scripts/export_to_mysql.js",
+    "preinstall": "echo PATH_DEBUG=$PATH; which node-gyp || echo NO_NODE_GYP; ls node_modules/.bin 2>&1 | head -3 || echo NO_BIN_YET"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
+  },
+  "devDependencies": {
+    "node-gyp": "^11.0.0"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "11.10.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.24.2"
+  }
+}
