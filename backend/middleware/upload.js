@@ -4,8 +4,18 @@ const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
 
-const uploadDir = path.resolve(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
+const isVercel = process.env.VERCEL === '1';
+const uploadDir = isVercel
+  ? path.join('/tmp', 'uploads')
+  : path.resolve(__dirname, '..', 'uploads');
+
+try {
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+} catch (e) {
+  console.warn('[Upload] Read-only directory notice:', e.message);
+}
 
 const ALLOWED_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
 const ALLOWED_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
@@ -62,11 +72,21 @@ const memoryUpload = multer({
 function persistBufferToDisk(buffer, originalExt) {
   const randomName = crypto.randomBytes(16).toString('hex');
   const filename = `${Date.now()}-${randomName}${originalExt}`;
-  const destPath = path.join(uploadDir, filename);
+  const targetDir = isVercel ? path.join('/tmp', 'uploads') : uploadDir;
+  try {
+    if (!fs.existsSync(targetDir)) {
+      fs.mkdirSync(targetDir, { recursive: true });
+    }
+  } catch (e) {
+    // Directory might already exist
+  }
+  const destPath = path.join(targetDir, filename);
   fs.writeFileSync(destPath, buffer, { mode: 0o644 });
-  // Reapply the mode explicitly rather than trusting fs.writeFileSync's mode option alone
-  // (umask can still affect it on some platforms) — guarantees no execute bits are ever set.
-  fs.chmodSync(destPath, 0o644);
+  try {
+    fs.chmodSync(destPath, 0o644);
+  } catch (e) {
+    // chmod can be ignored if filesystem does not support it
+  }
   return filename;
 }
 

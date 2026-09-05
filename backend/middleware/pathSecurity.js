@@ -27,8 +27,9 @@ function sanitizeFilename(filename) {
  * - Access to hidden / dotfiles (.env, .git, etc.)
  * - MIME-sniffing attacks via security headers
  */
-function createSafeStaticServer(baseDir) {
+function createSafeStaticServer(baseDir, fallbackDir = null) {
   const canonicalBase = path.resolve(baseDir);
+  const canonicalFallback = fallbackDir ? path.resolve(fallbackDir) : null;
 
   return function safeStaticMiddleware(req, res, next) {
     // Only allow GET and HEAD requests for static assets
@@ -55,30 +56,40 @@ function createSafeStaticServer(baseDir) {
         return res.status(403).json({ error: 'Forbidden: Directory traversal is not permitted' });
       }
 
-      // 3. Resolve canonical path
       const safeRelative = requestedPath.replace(/^\/+/, ''); // Strip leading slashes
-      const resolvedPath = path.resolve(canonicalBase, safeRelative);
+      const ext = path.extname(safeRelative).toLowerCase();
+      if (!ALLOWED_EXTENSIONS.has(ext)) {
+        return res.status(403).json({ error: 'Forbidden: File type not permitted' });
+      }
 
-      // 4. Strict boundary check: ensure resolved path is inside canonicalBase
-      if (!resolvedPath.startsWith(canonicalBase + path.sep) && resolvedPath !== canonicalBase) {
-        return res.status(403).json({ error: 'Forbidden: Access outside base directory' });
+      // 3. Resolve canonical path in baseDir first, then fallbackDir if provided
+      let resolvedPath = path.resolve(canonicalBase, safeRelative);
+      let found = false;
+
+      if (
+        (resolvedPath.startsWith(canonicalBase + path.sep) || resolvedPath === canonicalBase) &&
+        fs.existsSync(resolvedPath)
+      ) {
+        found = true;
+      } else if (canonicalFallback) {
+        const resolvedFallback = path.resolve(canonicalFallback, safeRelative);
+        if (
+          (resolvedFallback.startsWith(canonicalFallback + path.sep) || resolvedFallback === canonicalFallback) &&
+          fs.existsSync(resolvedFallback)
+        ) {
+          resolvedPath = resolvedFallback;
+          found = true;
+        }
+      }
+
+      if (!found) {
+        return res.status(404).json({ error: 'File not found' });
       }
 
       // 5. Reject hidden files (files starting with a dot)
       const filename = path.basename(resolvedPath);
       if (filename.startsWith('.')) {
         return res.status(403).json({ error: 'Forbidden: Access to hidden files denied' });
-      }
-
-      // 6. Check extension whitelist
-      const ext = path.extname(resolvedPath).toLowerCase();
-      if (!ALLOWED_EXTENSIONS.has(ext)) {
-        return res.status(403).json({ error: 'Forbidden: File type not permitted' });
-      }
-
-      // 7. Check file existence and file type
-      if (!fs.existsSync(resolvedPath)) {
-        return res.status(404).json({ error: 'File not found' });
       }
 
       const stat = fs.statSync(resolvedPath);

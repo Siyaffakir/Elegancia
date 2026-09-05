@@ -12,25 +12,36 @@ const DB_PASSWORD = process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSW
 const DB_NAME = process.env.DB_NAME || 'elegancia';
 
 let pool = null;
+let initPromise = null;
+
+const sslConfig = process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined;
 
 /**
  * Initializes the MySQL database connection, creates tables IF NOT EXISTS,
  * and automatically seeds default admin, catalog, and delivery pricing if empty.
  */
 async function initDatabase() {
-  try {
-    // 1. First connect to MySQL server (without specific database) to ensure DB exists
-    const rootConnection = await mysql.createConnection({
-      host: DB_HOST,
-      port: DB_PORT,
-      user: DB_USER,
-      password: DB_PASSWORD,
-    });
+  if (pool) return pool;
 
-    await rootConnection.query(
-      `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-    );
-    await rootConnection.end();
+  try {
+    // 1. Attempt to ensure DB exists (works on local XAMPP/Laragon with root credentials)
+    try {
+      const rootConnection = await mysql.createConnection({
+        host: DB_HOST,
+        port: DB_PORT,
+        user: DB_USER,
+        password: DB_PASSWORD,
+        ssl: sslConfig,
+      });
+
+      await rootConnection.query(
+        `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+      );
+      await rootConnection.end();
+    } catch (createDbErr) {
+      // Cloud providers (Railway, Aiven, TiDB) pre-create the DB and restrict CREATE DATABASE
+      console.log(`[Database] Skipping CREATE DATABASE check: ${createDbErr.message}`);
+    }
 
     // 2. Create the main connection pool connected to our database
     pool = mysql.createPool({
@@ -39,6 +50,7 @@ async function initDatabase() {
       user: DB_USER,
       password: DB_PASSWORD,
       database: DB_NAME,
+      ssl: sslConfig,
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
@@ -59,11 +71,23 @@ async function initDatabase() {
     await autoSeed();
 
     console.log('[Database] Database tables and seed check completed successfully.');
+    return pool;
   } catch (err) {
     console.error('[Database ERROR] Failed to connect/initialize MySQL database:', err.message);
-    console.error('Please ensure MySQL is running in your XAMPP/Laragon/WAMP control panel.');
+    console.error('Make sure your MySQL server is running and DB_HOST, DB_USER, DB_PASSWORD, DB_NAME are correct.');
     throw err;
   }
+}
+
+async function ensureDatabaseReady() {
+  if (pool) return pool;
+  if (!initPromise) {
+    initPromise = initDatabase().catch((err) => {
+      initPromise = null;
+      throw err;
+    });
+  }
+  return initPromise;
 }
 
 async function createTables() {
@@ -405,18 +429,21 @@ async function autoSeed() {
 
 // Return array of rows
 async function all(sql, params = []) {
+  if (!pool) await ensureDatabaseReady();
   const [rows] = await pool.query(sql, params);
   return rows;
 }
 
 // Return single row or null
 async function get(sql, params = []) {
+  if (!pool) await ensureDatabaseReady();
   const [rows] = await pool.query(sql, params);
   return rows && rows.length > 0 ? rows[0] : null;
 }
 
 // Execute INSERT/UPDATE/DELETE and return result with normalized fields
 async function run(sql, params = []) {
+  if (!pool) await ensureDatabaseReady();
   const [result] = await pool.query(sql, params);
   return {
     lastInsertRowid: result.insertId,
@@ -428,16 +455,19 @@ async function run(sql, params = []) {
 
 // Raw query
 async function query(sql, params = []) {
+  if (!pool) await ensureDatabaseReady();
   return pool.query(sql, params);
 }
 
 // Get connection for transactions
 async function getConnection() {
+  if (!pool) await ensureDatabaseReady();
   return pool.getConnection();
 }
 
 // Transaction wrapper
 async function transaction(callback) {
+  if (!pool) await ensureDatabaseReady();
   const conn = await pool.getConnection();
   try {
     await conn.beginTransaction();
@@ -454,6 +484,7 @@ async function transaction(callback) {
 
 module.exports = {
   initDatabase,
+  ensureDatabaseReady,
   all,
   get,
   run,

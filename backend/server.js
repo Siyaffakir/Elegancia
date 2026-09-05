@@ -29,13 +29,20 @@ app.use(
 );
 
 // 2. CORS configuration
-const allowedOrigins = CLIENT_ORIGIN.split(',').map((o) => o.trim());
+const allowedOrigins = (process.env.CLIENT_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map((o) => o.trim());
+
 app.use(
   cors({
     origin: (origin, callback) => {
       // Allow requests with no origin (e.g. mobile apps, curl, server-to-server)
       if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin) || allowedOrigins.includes('*')) {
+      if (
+        allowedOrigins.includes(origin) ||
+        allowedOrigins.includes('*') ||
+        origin.endsWith('.vercel.app')
+      ) {
         return callback(null, true);
       }
       return callback(new Error('CORS policy: Not allowed by CORS'), false);
@@ -67,7 +74,22 @@ app.use('/api', (req, res, next) => {
 
 // 5. Protected & Sanitized Static Upload Delivery (Path Traversal Protection)
 const uploadsDirectory = path.resolve(__dirname, 'uploads');
-app.use('/uploads', createSafeStaticServer(uploadsDirectory));
+const tmpUploadsDirectory = path.join('/tmp', 'uploads');
+app.use('/uploads', createSafeStaticServer(uploadsDirectory, tmpUploadsDirectory));
+
+// Root route (friendly status endpoint for Vercel / health probes)
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    message: 'Elegancia Backend API is online.',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      products: '/api/products',
+      orders: '/api/orders',
+    },
+  });
+});
 
 // 6. API Route Mounting
 app.use('/api/auth', authRouter);
@@ -109,12 +131,25 @@ async function startServer() {
     server = app.listen(PORT, () => {
       console.log(`[DZ Shop] Hardened API running on http://localhost:${PORT}`);
     });
+    return server;
   } catch (err) {
     console.error('[Server Startup Error] Could not start server because MySQL failed to initialize.');
-    console.error('Make sure MySQL is running in XAMPP / Laragon and that credentials in .env are correct.');
+    console.error('Make sure MySQL is running and credentials in .env are correct:', err.message);
   }
 }
 
-startServer();
+// Standalone mode: listen on PORT if executed directly (node server.js)
+// Serverless mode (Vercel): exported app is invoked per request
+if (process.env.VERCEL !== '1' && require.main === module) {
+  startServer();
+} else if (process.env.VERCEL === '1') {
+  // Pre-warm database pool on Vercel cold starts
+  initDatabase().catch((err) => {
+    console.warn('[Vercel DB Init Notice]:', err.message);
+  });
+}
 
-module.exports = { app, server };
+module.exports = app;
+module.exports.app = app;
+module.exports.server = server;
+module.exports.startServer = startServer;
