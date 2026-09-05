@@ -5,16 +5,53 @@ const bcrypt = require('bcryptjs');
 const fs = require('fs');
 const path = require('path');
 
-const DB_HOST = process.env.DB_HOST || 'localhost';
-const DB_PORT = parseInt(process.env.DB_PORT, 10) || 3306;
-const DB_USER = process.env.DB_USER || 'root';
-const DB_PASSWORD = process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : '';
-const DB_NAME = process.env.DB_NAME || 'elegancia';
-
 let pool = null;
 let initPromise = null;
 
-const sslConfig = process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : undefined;
+function getDatabaseConfig() {
+  let host = process.env.DB_HOST || process.env.MYSQL_HOST;
+  let port = process.env.DB_PORT || process.env.MYSQL_PORT;
+  let user = process.env.DB_USER || process.env.MYSQL_USER;
+  let password = process.env.DB_PASSWORD !== undefined ? process.env.DB_PASSWORD : process.env.MYSQL_PASSWORD;
+  let database = process.env.DB_NAME || process.env.MYSQL_DATABASE;
+  let ssl = process.env.DB_SSL === 'true' || process.env.MYSQL_SSL === 'true';
+
+  const rawUrl = process.env.DATABASE_URL || process.env.MYSQL_URL;
+  if (rawUrl) {
+    try {
+      const parsed = new URL(rawUrl);
+      if (parsed.hostname) host = parsed.hostname;
+      if (parsed.port) port = parsed.port;
+      if (parsed.username) user = decodeURIComponent(parsed.username);
+      if (parsed.password) password = decodeURIComponent(parsed.password);
+      if (parsed.pathname && parsed.pathname.length > 1) {
+        database = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+      }
+      if (rawUrl.includes('ssl') || parsed.searchParams.get('ssl-mode') || parsed.searchParams.get('ssl')) {
+        ssl = true;
+      }
+    } catch (e) {
+      console.warn('[Database] Could not parse DATABASE_URL, using individual variables:', e.message);
+    }
+  }
+
+  // Trim string values if present
+  host = typeof host === 'string' ? host.trim() : (host || 'localhost');
+  user = typeof user === 'string' ? user.trim() : (user || 'root');
+  password = typeof password === 'string' ? password.trim() : (password !== undefined ? password : '');
+  database = typeof database === 'string' ? database.trim() : (database || 'elegancia');
+  port = parseInt(port, 10) || 3306;
+
+  // Auto-enable SSL for remote cloud databases (Aiven, Railway, AWS RDS, PlanetScale, etc.) unless explicitly set to false
+  const isLocal = host === 'localhost' || host === '127.0.0.1';
+  if (!isLocal && process.env.DB_SSL !== 'false' && process.env.MYSQL_SSL !== 'false') {
+    ssl = true;
+  }
+
+  const sslConfig = ssl ? { rejectUnauthorized: false } : undefined;
+
+  return { host, port, user, password, database, sslConfig, isLocal };
+}
 
 /**
  * Initializes the MySQL database connection, creates tables IF NOT EXISTS,
@@ -23,34 +60,37 @@ const sslConfig = process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } 
 async function initDatabase() {
   if (pool) return pool;
 
-  try {
-    // 1. Attempt to ensure DB exists (works on local XAMPP/Laragon with root credentials)
-    try {
-      const rootConnection = await mysql.createConnection({
-        host: DB_HOST,
-        port: DB_PORT,
-        user: DB_USER,
-        password: DB_PASSWORD,
-        ssl: sslConfig,
-      });
+  const config = getDatabaseConfig();
 
-      await rootConnection.query(
-        `CREATE DATABASE IF NOT EXISTS \`${DB_NAME}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
-      );
-      await rootConnection.end();
-    } catch (createDbErr) {
-      // Cloud providers (Railway, Aiven, TiDB) pre-create the DB and restrict CREATE DATABASE
-      console.log(`[Database] Skipping CREATE DATABASE check: ${createDbErr.message}`);
+  try {
+    // 1. Attempt to ensure DB exists on local environments (XAMPP/Laragon)
+    if (config.isLocal && config.user === 'root') {
+      try {
+        const rootConnection = await mysql.createConnection({
+          host: config.host,
+          port: config.port,
+          user: config.user,
+          password: config.password,
+          ssl: config.sslConfig,
+        });
+
+        await rootConnection.query(
+          `CREATE DATABASE IF NOT EXISTS \`${config.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+        );
+        await rootConnection.end();
+      } catch (createDbErr) {
+        console.log(`[Database] Skipping CREATE DATABASE check: ${createDbErr.message}`);
+      }
     }
 
     // 2. Create the main connection pool connected to our database
     pool = mysql.createPool({
-      host: DB_HOST,
-      port: DB_PORT,
-      user: DB_USER,
-      password: DB_PASSWORD,
-      database: DB_NAME,
-      ssl: sslConfig,
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      password: config.password,
+      database: config.database,
+      ssl: config.sslConfig,
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0,
@@ -59,7 +99,7 @@ async function initDatabase() {
       decimalNumbers: true,
     });
 
-    console.log(`[Database] Connected to MySQL database "${DB_NAME}" at ${DB_HOST}:${DB_PORT}`);
+    console.log(`[Database] Connected to MySQL database "${config.database}" at ${config.host}:${config.port}`);
 
     // 3. Create all necessary tables
     await createTables();
@@ -74,7 +114,7 @@ async function initDatabase() {
     return pool;
   } catch (err) {
     console.error('[Database ERROR] Failed to connect/initialize MySQL database:', err.message);
-    console.error('Make sure your MySQL server is running and DB_HOST, DB_USER, DB_PASSWORD, DB_NAME are correct.');
+    console.error('Make sure your MySQL server is running and DB credentials (or DATABASE_URL) are correct.');
     throw err;
   }
 }
